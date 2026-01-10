@@ -18,7 +18,7 @@ To modify the existing DGNSS simulation pipeline to validate the "15-minute Bloc
 
 * **Change**: Replace the `baselineLength`/`correlationLength` logic with a `ScenarioType` switch.
 * **New Scenarios**:
-* `'Multipath'`: Inject Gauss-Markov process (Time constant ) or Sine wave (Period  min). *Target: ELT Pass after averaging.*
+* `'Multipath'`: Inject Gauss-Markov process (Time constant $\tau$). *Target: ELT Pass after averaging.*
 * `'SMM'`: Inject Constant Bias (e.g., 0.5m) + White Noise. *Target: ELT Fail after averaging.*
 * `'Optimism'`: Inject White Noise, but tell the solver the variance is smaller (scale reported covariance). *Target: ELT Pass, NLL/NCI shows Optimism.*
 
