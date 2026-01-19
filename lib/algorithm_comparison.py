@@ -618,7 +618,7 @@ class NEESChiSquaredClassifier:
         p_value = 1 - chi2.cdf(chi2_stat, df=N-1)
         
         if p_value < self.alpha:
-            if np.mean(nees_array) < expected_nees:
+            if np.mean(nees_array) > expected_nees:
                 return 'Optimistic'
             else:
                 return 'Pessimistic'
@@ -660,9 +660,9 @@ class PureNCIClassifier:
         nci = 10 * (mean_log_nees - expected_log_nees)
         
         # Classification based on NCI thresholds
-        if nci < -0.5:  # dB
+        if nci > 0.5:  # dB
             return 'Optimistic'
-        elif nci > 0.5:  # dB
+        elif nci < -0.5:  # dB
             return 'Pessimistic'
         else:
             return 'Calibrated'

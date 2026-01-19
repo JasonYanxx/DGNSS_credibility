@@ -15,7 +15,8 @@ from datetime import datetime
 
 
 def inject_errors(obs_base, obs_rover, baseline_length_km, base_loc=None, rover_loc=None, 
-                   L_corr_km=30.0, sample_interval=1.0, use_real_models=False, scenario_mode=None):
+                   L_corr_km=30.0, sample_interval=1.0, use_real_models=False, scenario_mode=None,
+                   multipath_config=None):
     """
     Inject spatially correlated errors into GNSS observations.
     Uses real atmospheric delay models (Saastamoinen troposphere, Klobuchar ionosphere).
@@ -78,20 +79,27 @@ def inject_errors(obs_base, obs_rover, baseline_length_km, base_loc=None, rover_
     # 1. Specular reflection (Main Sine Component)
     # Base station (better environment, weaker multipath)
     # specular_amp_range_base = (0.5, 1.0) 
-    specular_amp_base = 0.2  # m
-    # Rover station (dynamic/cluttered environment, stronger multipath)
-    # specular_amp_range_rover = (1.0, 2.0)
-    specular_amp_rover = 0.2  # m
-    specular_freq = 1.0 / 200.0  # Hz
+    if multipath_config is not None:
+        specular_amp_base = multipath_config.get('specular_amp_base', 0.2)  # m
+        specular_amp_rover = multipath_config.get('specular_amp_rover', 0.2)  # m
+        specular_freq = multipath_config.get('specular_freq', 1.0 / 200.0)  # Hz
+        phi_diffuse = multipath_config.get('phi_diffuse', 0.99)
+        sigma_diffuse_base = multipath_config.get('sigma_diffuse_base', 0.05)  # m
+        sigma_diffuse_rover = multipath_config.get('sigma_diffuse_rover', 0.1)  # m
+    else:
+        # Default values
+        specular_amp_base = 0.2  # m
+        specular_amp_rover = 0.2  # m
+        specular_freq = 1.0 / 200.0  # Hz (default: 200s period)
+        phi_diffuse = 0.99
+        sigma_diffuse_base = 0.05  # m
+        sigma_diffuse_rover = 0.1  # m
     
     # 2. Diffuse reflection (Background AR(1) Noise)
-    # Weakly correlated AR(1) process: eta_k = 0.8 * eta_{k-1} + w_k
-    phi_diffuse = 0.99 # tau ~ 100s
+    # Weakly correlated AR(1) process: eta_k = phi * eta_{k-1} + w_k
     # Base station (weaker diffuse multipath)
-    sigma_diffuse_base = 0.05  # Magnitude of diffuse multipath (meters)
     sigma_diffuse_driving_base = sigma_diffuse_base * np.sqrt(1 - phi_diffuse**2) # Driving noise std
     # Rover station (stronger diffuse multipath)
-    sigma_diffuse_rover = 0.1  # Magnitude of diffuse multipath (meters)
     sigma_diffuse_driving_rover = sigma_diffuse_rover * np.sqrt(1 - phi_diffuse**2) # Driving noise std
     
     # 3. Total multipath error sigma
@@ -102,7 +110,7 @@ def inject_errors(obs_base, obs_rover, baseline_length_km, base_loc=None, rover_
     dt = sample_interval
     
     # Constant bias in meters (for SMM)
-    constant_bias = 50
+    constant_bias = 10
 
     # Initialize faulty satellite ID for consistent bias injection
     faulty_sat_id = None
@@ -350,11 +358,6 @@ def inject_errors(obs_base, obs_rover, baseline_length_km, base_loc=None, rover_
                 err_total_base = err_multipath_base + err_thermal_base
                 err_total_rover = err_multipath_rover + err_thermal_rover + bias_vector
                 
-            elif scenario_mode == "optimism":
-                # Scenario D: Normal errors but covariance will be underestimated downstream
-                # Just use thermal noise (no additional error sources)
-                err_total_base = err_thermal_base
-                err_total_rover = err_thermal_rover
             elif scenario_mode == "healthy_no_multipath":
                 # Scenario E: Healthy with no multipath
                 # Just use thermal noise (no additional error sources)
@@ -400,9 +403,6 @@ def inject_errors(obs_base, obs_rover, baseline_length_km, base_loc=None, rover_
     elif scenario_mode == "mixed":
         # Include multipath in sigma_dd, bias is mean offset
         sigma_dd = np.sqrt(sigma_thermal**2*4 + sigma_multipat_base**2*2 + sigma_multipat_rover**2*2)
-    elif scenario_mode == "optimism":
-        # Will be scaled down by caller, use thermal only
-        sigma_dd = np.sqrt(sigma_thermal**2*4)
     elif scenario_mode == "healthy_no_multipath":
         # Healthy with no multipath
         sigma_dd = np.sqrt(sigma_thermal**2*4)

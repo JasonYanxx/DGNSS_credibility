@@ -4,6 +4,7 @@ Implements the "Time Domain Decoupling - Joint Estimation - Asymmetric Diagnosis
 """
 
 import numpy as np
+import pickle
 import pandas as pd
 import matplotlib.pyplot as plt
 import sys
@@ -14,7 +15,8 @@ import os
 from geometry_engine import generate_obs
 from error_injection import inject_errors
 from dgnss_solver import solve_dgnss
-from diagnostic_system import DiagnosticSystem, BlockAverager
+from diagnostic_system import DiagnosticSystem, BlockAveragerEffective
+from lib.algorithm_comparison import PureNCIClassifier,NEESChiSquaredClassifier
 
 def compute_acf(x, max_lag=None):
     """
@@ -67,19 +69,30 @@ def plot_commissioning_results(scenario_results, output_dir='plots_commissioning
     """
     os.makedirs(output_dir, exist_ok=True)
     
-    # Create comparison figure
-    fig = plt.figure(figsize=(20, 16))
-    gs = fig.add_gridspec(5, 4, hspace=0.4, wspace=0.3)
+    # Create comparison figure - 6 scenarios in 2 rows x 3 columns
+    # ROW 1-2 (before/after block averaging), ROW 3 (NCI), ROW 4 (ACF), ROW 5 (Summary)
+    fig = plt.figure(figsize=(24, 20))
+    gs = fig.add_gridspec(5, 6, hspace=0.4, wspace=0.3)
     
-    scenarios = ['A_multipath', 'B_fault', 'C_mixed', 'D_optimism']
-    scenario_names = ['Scenario 1: Multipath', 'Scenario 2: System Fault', 'Scenario 3: Mixed', 'Scenario 4: Optimism']
-    colors = ['blue', 'red', 'purple', 'green']
+    scenarios = ['multipath_thermal', 'multipath_smm_thermal', 'multipath_optimistic', 
+                 'multipath_permissive', 'multipath_smm_optimistic', 'multipath_smm_permissive']
+    scenario_names = [
+        '1: multipath+thermal',
+        '2: multipath+SMM+thermal',
+        '3: multipath+strong optimistic',
+        '4: multipath+strong permissive',
+        '5: multipath+SMM+strong optimistic',
+        '6: multipath+SMM+strong permissive'
+    ]
+    colors = ['blue', 'red', 'orange', 'green', 'purple', 'brown']
+    axis_colors = ['red', 'green', 'blue']  # X, Y, Z axis colors
+    axis_labels = ['X', 'Y', 'Z']
     
     fig.suptitle('Commissioning Protocol Verification: 15-Minute Block Averaging', 
                  fontsize=16, fontweight='bold')
     
     # ========================================================================
-    # ROW 1: Block Means (Position Errors)
+    # ROW 1: Block Means BEFORE Block Averaging (Raw 1Hz, 30s blocks) - X, Y, Z separately
     # ========================================================================
     for col, (key, name, color) in enumerate(zip(scenarios, scenario_names, colors)):
         ax = fig.add_subplot(gs[0, col])
@@ -87,50 +100,44 @@ def plot_commissioning_results(scenario_results, output_dir='plots_commissioning
         
         # Plot raw position errors (first 100 epochs for visibility)
         block_means_raw = result['raw_diagnosis']['block_means'][:100]
-        block_means_block = result['block_diagnosis']['block_means']
-        
         x_raw = np.arange(len(block_means_raw))
-        x_block = np.arange(len(block_means_block))
         
-        # Plot 3D norm of position errors
-        errors_raw = np.linalg.norm(block_means_raw, axis=1)
-        errors_block = np.linalg.norm(block_means_block, axis=1)
-        
-        ax.plot(x_raw, errors_raw, 'o-', alpha=0.5, markersize=2, 
-                label='30s Blocks (Raw)', color='gray', linewidth=0.5)
-        ax.plot(x_block, errors_block, 's-', markersize=6, 
-                label='15-min Blocks', color=color, linewidth=2)
+        # Plot X, Y, Z axes separately
+        for axis_idx, (axis_label, axis_color) in enumerate(zip(axis_labels, axis_colors)):
+            errors_axis = block_means_raw[:, axis_idx]
+            ax.plot(x_raw, errors_axis, 'o-', alpha=0.7, markersize=2, 
+                    label=f'{axis_label}-axis', color=axis_color, linewidth=1)
         
         ax.set_xlabel('Block Index', fontsize=10)
         ax.set_ylabel('Position Error (m)', fontsize=10)
-        ax.set_title(f'{name}\nBlock Means', fontsize=11, fontweight='bold')
-        ax.legend(fontsize=8)
+        ax.set_title(f'{name}\nBefore Block Averaging (Raw 1Hz)', fontsize=11, fontweight='bold')
+        ax.legend(fontsize=7)
         ax.grid(True, alpha=0.3)
+        ax.axhline(0, color='black', linestyle='--', linewidth=0.5, alpha=0.5)
     
     # ========================================================================
-    # ROW 2: SMM Estimates (Bias Detection) - Corresponds to ELT
+    # ROW 2: Block Means AFTER Block Averaging (15-min blocks) - X, Y, Z separately
     # ========================================================================
     for col, (key, name, color) in enumerate(zip(scenarios, scenario_names, colors)):
         ax = fig.add_subplot(gs[1, col])
         result = scenario_results[key]
         
-        # Plot SMM estimates (3D norm)
-        smm_raw = np.linalg.norm(result['raw_diagnosis']['smm_estimate'], axis=1)
-        smm_block = np.linalg.norm(result['block_diagnosis']['smm_estimate'], axis=1)
+        # Plot block-averaged position errors
+        block_means_block = result['block_diagnosis']['block_means']
+        x_block = np.arange(len(block_means_block))
         
-        x_raw = np.arange(len(smm_raw))
-        x_block = np.arange(len(smm_block))
-        
-        ax.plot(x_raw, smm_raw, 'o-', alpha=0.5, markersize=2, 
-                label='30s Blocks', color='gray', linewidth=0.5)
-        ax.plot(x_block, smm_block, 's-', markersize=6, 
-                label='15-min Blocks', color=color, linewidth=2)
+        # Plot X, Y, Z axes separately
+        for axis_idx, (axis_label, axis_color) in enumerate(zip(axis_labels, axis_colors)):
+            errors_axis = block_means_block[:, axis_idx]
+            ax.plot(x_block, errors_axis, 's-', markersize=6, 
+                    label=f'{axis_label}-axis', color=axis_color, linewidth=2)
         
         ax.set_xlabel('Block Index', fontsize=10)
-        ax.set_ylabel('SMM Estimate (m)', fontsize=10)
-        ax.set_title('Bias Detection (KF Estimate)', fontsize=11, fontweight='bold')
-        ax.legend(fontsize=8)
+        ax.set_ylabel('Position Error (m)', fontsize=10)
+        ax.set_title(f'{name}\nAfter Block Averaging (15-min)', fontsize=11, fontweight='bold')
+        ax.legend(fontsize=7)
         ax.grid(True, alpha=0.3)
+        ax.axhline(0, color='black', linestyle='--', linewidth=0.5, alpha=0.5)
     
     # ========================================================================
     # ROW 3: NCI (Noncredibility Index) - Corresponds to NLL/NCI
@@ -170,7 +177,7 @@ def plot_commissioning_results(scenario_results, output_dir='plots_commissioning
     # Only show for Multipath scenario (Scenario 1) as requested
     ax_acf = fig.add_subplot(gs[3, :])
     
-    multipath_res = scenario_results['A_multipath']
+    multipath_res = scenario_results['multipath_thermal']
     acf_raw = multipath_res['acf_raw']
     acf_block = multipath_res['acf_block']
     
@@ -210,30 +217,40 @@ def plot_commissioning_results(scenario_results, output_dir='plots_commissioning
     table_data.append(['-'*20, '-'*30, '-'*20, '-'*20, '-'*10])
     
     expected_outcomes = {
-        'A_multipath': ('Pass (Healthy)', 'Multipath decorrelates -> Calibrated'),
-        'B_fault': ('Fail (Fault)', 'Bias survives -> Bias Detected'),
-        'C_mixed': ('Fail (Fault)', 'Bias survives -> Bias Detected'),
-        'D_optimism': ('Fail (Model)', 'Underestimation -> Optimistic')
+        'multipath_thermal': ('Pass (Healthy)', 'Multipath decorrelates -> Calibrated'),
+        'multipath_smm_thermal': ('Fail (Fault)', 'Bias survives -> Bias Detected'),
+        'multipath_optimistic': ('Fail (Model)', 'Underestimation -> Optimistic'),
+        'multipath_permissive': ('Pass (Model)', 'Overestimation -> Pessimistic'),
+        'multipath_smm_optimistic': ('Fail (Fault+Model)', 'Bias + Underestimation'),
+        'multipath_smm_permissive': ('Fail (Fault)', 'Bias survives, overestimation helps')
     }
     
     for key, name in zip(scenarios, scenario_names):
         result = scenario_results[key]
-        expected, _ = expected_outcomes[key]
+        expected, _ = expected_outcomes.get(key, ('Unknown', ''))
         raw_class = result['raw_diagnosis']['classification']
         block_class = result['block_diagnosis']['classification']
         
         # Determine pass/fail for block averaging
         status = '?'
-        if key == 'A_multipath':
+        if key == 'multipath_thermal':
             # Should be calibrated after block averaging (or at least no Bias)
-            # Current code might output Optimistic if noise is large, but "Bias" should be gone.
             status = '✓ PASS' if 'Bias' not in block_class else '✗ FAIL'
-        elif key in ['B_fault', 'C_mixed']:
+        elif key == 'multipath_smm_thermal':
             # Should detect bias
             status = '✓ PASS' if 'Bias' in block_class else '✗ FAIL'
-        elif key == 'D_optimism':
+        elif key == 'multipath_optimistic':
             # Should detect optimism
             status = '✓ PASS' if 'Optimistic' in block_class else '✗ FAIL'
+        elif key == 'multipath_permissive':
+            # Should be pessimistic (overestimation)
+            status = '✓ PASS' if 'Pessimistic' in block_class or 'Calibrated' in block_class else '✗ FAIL'
+        elif key == 'multipath_smm_optimistic':
+            # Should detect both bias and optimism
+            status = '✓ PASS' if ('Bias' in block_class or 'Optimistic' in block_class) else '✗ FAIL'
+        elif key == 'multipath_smm_permissive':
+            # Should detect bias (overestimation might mask it)
+            status = '✓ PASS' if 'Bias' in block_class else '✗ FAIL'
         
         table_data.append([name, expected, raw_class, block_class, status])
     
@@ -321,17 +338,18 @@ def run_commissioning_verification(baseline_km=1.0, duration_hours=2.0, block_wi
     scenario_results = {}
     
     # Helper to run a scenario
-    def run_scenario(name, mode, inject_nmm=1.0):
+    def generate_error_vecs(name, mode, inject_nmm=1.0, obs_base=None, obs_rover=None, sat_info=None):
         print("\n" + "-"*80)
         print(f"SCENARIO: {name} (Mode: {mode})")
         print("-"*80)
         
-        print("Generating geometry...")
-        obs_base, obs_rover, _, sat_info, _ = generate_obs(
-            start_time, duration_hours, sample_interval, base_loc, baseline_km,
-            mask_angle_deg=mask_angle_deg
-        )
-        
+        if obs_base is None or obs_rover is None or sat_info is None:
+            print("Generating geometry...")
+            obs_base, obs_rover, _, sat_info, _ = generate_obs(
+                start_time, duration_hours, sample_interval, base_loc, baseline_km,
+                mask_angle_deg=mask_angle_deg
+            )
+
         print(f"Injecting errors...")
         obs_base_c, obs_rover_c, sigma_dd = inject_errors(
             obs_base, obs_rover, baseline_km,
@@ -352,76 +370,144 @@ def run_commissioning_verification(baseline_km=1.0, duration_hours=2.0, block_wi
             Q_xyz = [cov * inject_nmm for cov in Q_xyz]
             
         # save error_vecs and Q_xyz
-        np.savez(f"error_vecs_{name}.npz", error_vecs=error_vecs, Q_xyz=Q_xyz)
+        np.savez(f"data/error_vecs_{name}.npz", error_vecs=error_vecs, Q_xyz=Q_xyz)
         print(f"Saved error_vecs and Q_xyz to error_vecs_{name}.npz")
+
+        return error_vecs, Q_xyz
+
+
+    print("Generating geometry...")
+    obs_base, obs_rover, _, sat_info, _ = generate_obs(
+        start_time, duration_hours, sample_interval, base_loc, baseline_km,
+        mask_angle_deg=mask_angle_deg
+    )
+    # 0. healthy_no_multipath
+    error_vecs, Q_xyz = generate_error_vecs("0: healthy_no_multipath", "healthy_no_multipath", inject_nmm=1.0, obs_base=obs_base, obs_rover=obs_rover, sat_info=sat_info)
+    res = run_diagnosis("0: healthy_no_multipath", block_window_s, error_vecs=error_vecs, Q_xyz=Q_xyz)
+    # scenario_results['healthy_no_multipath'] = res
+    
+    # 1. multipath+thermal
+    error_vecs, Q_xyz = generate_error_vecs("1: multipath+thermal", "multipath_dominant", inject_nmm=1.0, obs_base=obs_base, obs_rover=obs_rover, sat_info=sat_info)
+    # res = run_diagnosis("1: multipath+thermal", block_window_s, error_vecs=error_vecs, Q_xyz=Q_xyz)
+    # scenario_results['multipath_thermal'] = res
+    
+    # 2. multipath+SMM+thermal
+    error_vecs, Q_xyz = generate_error_vecs("2: multipath+SMM+thermal", "mixed", inject_nmm=1.0, obs_base=obs_base, obs_rover=obs_rover, sat_info=sat_info)
+    # res = run_diagnosis("2: multipath+SMM+thermal", block_window_s, error_vecs=error_vecs, Q_xyz=Q_xyz)
+    # scenario_results['multipath_smm_thermal'] = res
+    
+    # 3. multipath+ strong optimistic on thermal
+    error_vecs, Q_xyz = generate_error_vecs("3: multipath+strong optimistic on thermal", "multipath_dominant", inject_nmm=0.5, obs_base=obs_base, obs_rover=obs_rover, sat_info=sat_info)
+    # res = run_diagnosis("3: multipath+strong optimistic on thermal", block_window_s, error_vecs=error_vecs, Q_xyz=Q_xyz)
+    # scenario_results['multipath_optimistic'] = res
+    
+    # 4. multipath+ strong permissive on thermal
+    error_vecs, Q_xyz = generate_error_vecs("4: multipath+strong permissive on thermal", "multipath_dominant", inject_nmm=2.0, obs_base=obs_base, obs_rover=obs_rover, sat_info=sat_info)
+    # res = run_diagnosis("4: multipath+strong permissive on thermal", block_window_s, error_vecs=error_vecs, Q_xyz=Q_xyz)
+    # scenario_results['multipath_permissive'] = res
+    
+    # 5. multipath+SMM+strong optimistic on thermal
+    error_vecs, Q_xyz = generate_error_vecs("5: multipath+SMM+strong optimistic on thermal", "mixed", inject_nmm=0.5, obs_base=obs_base, obs_rover=obs_rover, sat_info=sat_info)
+    # res = run_diagnosis("5: multipath+SMM+strong optimistic on thermal", block_window_s, error_vecs=error_vecs, Q_xyz=Q_xyz)
+    # scenario_results['multipath_smm_optimistic'] = res
+    
+    # 6. multipath+SMM+strong permissive on thermal
+    error_vecs, Q_xyz = generate_error_vecs("6: multipath+SMM+strong permissive on thermal", "mixed", inject_nmm=2.0, obs_base=obs_base, obs_rover=obs_rover, sat_info=sat_info)
+    # res = run_diagnosis("6: multipath+SMM+strong permissive on thermal", block_window_s, error_vecs=error_vecs, Q_xyz=Q_xyz)
+    # scenario_results['multipath_smm_permissive'] = res
+    
+    return scenario_results
+
+def run_diagnosis_new(name, block_window_s, error_vecs=None, Q_xyz=None):
+    if error_vecs is None or Q_xyz is None:
         # load error_vecs and Q_xyz
-        data = np.load(f"error_vecs_{name}.npz")
+        data = np.load(f"data/error_vecs_{name}.npz")
         error_vecs = data['error_vecs']
         Q_xyz = data['Q_xyz']
         print(f"Loaded error_vecs and Q_xyz from error_vecs_{name}.npz")
 
-        print("Running diagnosis...")
-        # Raw 1Hz (30s blocks)
-        diag_raw = DiagnosticSystem()
-        diag_raw.averager = BlockAverager(T_batch=1.0, f_hz=1.0)
-        res_raw = diag_raw.run(error_vecs, Q_xyz)
-        
-        # Block Averaged (15-min)
-        diag_block = DiagnosticSystem()
-        diag_block.averager = BlockAverager(T_batch=block_window_s, f_hz=1.0)
-        res_block = diag_block.run(error_vecs, Q_xyz)
-        
-        if res_block is None:
-            return None
-            
-        print(f"  Raw 1Hz: {res_raw['classification']}")
-        print(f"  Block 15-min: {res_block['classification']}")
-        
-        # Compute ACF for first error component (X)
-        errors_x = np.array(error_vecs)[:, 0]
-        acf_raw = compute_acf(errors_x, max_lag=3600) # 1 hour lag
-        
-        block_means_x = res_block['block_means'][:, 0]
-        acf_block = compute_acf(block_means_x, max_lag=len(block_means_x)-1)
-        
-        return {
-            'raw_diagnosis': res_raw,
-            'block_diagnosis': res_block,
-            'acf_raw': acf_raw,
-            'acf_block': acf_block,
-            'num_epochs': len(error_vecs)
-        }
+    print("Running diagnosis...")
+    
+    # use pure NEES and pure NCI for diagnosis
+    all_zero_states = np.zeros_like(error_vecs)
+    classifier_nees = NEESChiSquaredClassifier(state_dim=3)
+    classification_nees = classifier_nees.classify(all_zero_states, error_vecs, Q_xyz)
+    classifier_nci = PureNCIClassifier(state_dim=3)
+    classification_nci = classifier_nci.classify(all_zero_states, error_vecs, Q_xyz)
+    
+    print(f"  Pure NEES Classification: {classification_nees}")
+    print(f"  Pure NCI Classification: {classification_nci}")
+    
+    # new algorithm (DiaNew)
+    from diagnostic_system import DiaNew
+    diag_new = DiaNew(state_dim=3, n_samples=1000, block_window_s=block_window_s)
+    df_new = diag_new.run_algorithm(all_zero_states, error_vecs, Q_xyz)
+    
+    # Add pure NEES and pure NCI classification results to DataFrame
+    df_new['pure_nees_classification'] = classification_nees
+    df_new['pure_nci_classification'] = classification_nci
+    
+    return df_new
 
-    # 1. Scenario A: Multipath Dominant (Healthy)
-    res = run_scenario("A: Multipath", "multipath_dominant")
-    if res is None: return None
-    scenario_results['A_multipath'] = res
-    
-    # 2. Scenario B: System Fault (Bias)
-    res = run_scenario("B: System Fault", "system_fault_smm")
-    scenario_results['B_fault'] = res
-    
-    # 3. Scenario C: Mixed (Multipath + Bias)
-    res = run_scenario("C: Mixed", "mixed")
-    scenario_results['C_mixed'] = res
-    
-    # 4. Scenario D: Optimism
-    res = run_scenario("D: Optimism", "optimism", inject_nmm=0.5)
-    scenario_results['D_optimism'] = res
 
-    # 5. Healthy with no multipath
-    res = run_scenario("E: Healthy with no multipath", "healthy_no_multipath")
-    scenario_results['E_healthy_no_multipath'] = res
-    
-    return scenario_results
+def run_diagnosis(name, block_window_s, error_vecs=None, Q_xyz=None):
+    if error_vecs is None or Q_xyz is None:
+        # load error_vecs and Q_xyz
+        data = np.load(f"data/error_vecs_{name}.npz")
+        error_vecs = data['error_vecs']
+        Q_xyz = data['Q_xyz']
+        print(f"Loaded error_vecs and Q_xyz from error_vecs_{name}.npz")
 
+    print("Running diagnosis...")
+    
+    # use pure NCI for diagnosis
+    all_zero_states = np.zeros_like(error_vecs)
+    classifier_nees = NEESChiSquaredClassifier(state_dim=3)
+    classification_nees = classifier_nees.classify(all_zero_states,error_vecs, Q_xyz)
+    classifier_nci = PureNCIClassifier(state_dim=3)
+    classification_nci = classifier_nci.classify(all_zero_states,error_vecs, Q_xyz)
+
+    # Raw 1Hz (1s blocks)
+    diag_raw = DiagnosticSystem()
+    diag_raw.averager = BlockAveragerEffective(T_batch=1.0, f_hz=1.0)
+    res_raw = diag_raw.run(error_vecs, Q_xyz)
+    
+    # Block Averaged (15min blocks)
+    diag_block = DiagnosticSystem()
+    diag_block.averager = BlockAveragerEffective(T_batch=block_window_s, f_hz=1.0)
+    res_block = diag_block.run(error_vecs, Q_xyz)
+
+
+    if res_block is None:
+        return None
+    print(f"  NEES Classification: {classification_nees}")
+    print(f"  NCI Classification: {classification_nci}")
+    print(f"  Raw 1Hz: {res_raw['classification']}")
+    print(f"  Block 15-min: {res_block['classification']}")
+    
+    # Compute ACF for first error component (X)
+    errors_x = np.array(error_vecs)[:, 0]
+    acf_raw = compute_acf(errors_x, max_lag=3600) # 1 hour lag
+    
+    block_means_x = res_block['block_means'][:, 0]
+    acf_block = compute_acf(block_means_x, max_lag=len(block_means_x)-1)
+    
+    return {
+        'nees_classification': classification_nees,
+        'nci_classification': classification_nci,
+        'raw_diagnosis': res_raw,
+        'block_diagnosis': res_block,
+        'acf_raw': acf_raw,
+        'acf_block': acf_block,
+        'num_epochs': len(error_vecs)
+    }
 
 def main():
     """Main execution function for Commissioning Protocol Verification."""
     import argparse
     
     parser = argparse.ArgumentParser(description='DGNSS Commissioning Protocol Verification')
-    parser.add_argument('--duration', type=float, default=5,
+    parser.add_argument('--duration', type=float, default=2,
                         help='Simulation duration in hours (default: 2.0)')
     args = parser.parse_args()
     
@@ -435,11 +521,22 @@ def main():
         duration_hours=args.duration,
         block_window_s=900.0  # 15 minutes
     )
+
     
     if scenario_results is None:
         print("\nERROR: Commissioning verification failed!")
         return
     
+     # save scenario_results to a pickle file
+    with open('results/scenario_results.pkl', 'wb') as f:
+        pickle.dump(scenario_results, f)
+    print(f"Saved scenario_results to results/scenario_results.pkl")
+
+    # # load scenario_results from a pickle file
+    # with open('results/scenario_results.pkl', 'rb') as f:
+    #     scenario_results_new = pickle.load(f)
+    # print(f"Loaded scenario_results from results/scenario_results.pkl")
+
     # Generate plots
     print("\nGenerating comparison plots...")
     plot_commissioning_results(scenario_results)
@@ -463,7 +560,7 @@ if __name__ == '__main__':
     # plt.plot(error_vecs[:, 1])
     # plt.plot(error_vecs[:, 2])
 
-    # means, covs, _ = BlockAverager(T_batch=5*60, f_hz=1.0).process(error_vecs, Q_xyz)
+    # means, covs, _ = BlockAveragerEffective(T_batch=5*60, f_hz=1.0).process(error_vecs, Q_xyz)
     # # plot means
     # plt.subplot(2, 1, 2)
     # plt.plot(means[:, 0])
@@ -474,12 +571,62 @@ if __name__ == '__main__':
     # print("Running diagnosis...")
     # # Raw 1Hz (30s blocks)
     # diag_raw = DiagnosticSystem()
-    # diag_raw.averager = BlockAverager(T_batch=1.0, f_hz=1.0)
+    # diag_raw.averager = BlockAveragerEffective(T_batch=1.0, f_hz=1.0)
     # res_raw = diag_raw.run(error_vecs, Q_xyz)
     
     # # Block Averaged (15-min)
     # diag_block = DiagnosticSystem()
-    # diag_block.averager = BlockAverager(T_batch=15*60, f_hz=1.0)
+    # diag_block.averager = BlockAveragerEffective(T_batch=15*60, f_hz=1.0)
     # res_block = diag_block.run(error_vecs, Q_xyz)
     # aa=0
-        
+    # print("Running diagnosis...")
+    # results_dataframes = {}
+    
+    # # 1. multipath+thermal
+    # df_res = run_diagnosis_new("1: multipath+thermal", 900.0)
+    # results_dataframes['multipath_thermal'] = df_res
+    # print(f"Scenario 1: multipath+thermal diagnosis completed")
+    
+    # # 2. multipath+SMM+thermal
+    # df_res = run_diagnosis_new("2: multipath+SMM+thermal", 900.0)
+    # results_dataframes['multipath_smm_thermal'] = df_res
+    # print(f"Scenario 2: multipath+SMM+thermal diagnosis completed")
+    
+    # # 3. multipath+ strong optimistic on thermal
+    # df_res = run_diagnosis_new("3: multipath+strong optimistic on thermal", 900.0)
+    # results_dataframes['multipath_optimistic'] = df_res
+    # print(f"Scenario 3: multipath+strong optimistic on thermal diagnosis completed")
+    
+    # # 4. multipath+ strong permissive on thermal
+    # df_res = run_diagnosis_new("4: multipath+strong permissive on thermal", 900.0)
+    # results_dataframes['multipath_permissive'] = df_res
+    # print(f"Scenario 4: multipath+strong permissive on thermal diagnosis completed")
+    
+    # # 5. multipath+SMM+strong optimistic on thermal
+    # df_res = run_diagnosis_new("5: multipath+SMM+strong optimistic on thermal", 900.0)
+    # results_dataframes['multipath_smm_optimistic'] = df_res
+    # print(f"Scenario 5: multipath+SMM+strong optimistic on thermal diagnosis completed")
+    
+    # # 6. multipath+SMM+strong permissive on thermal
+    # df_res = run_diagnosis_new("6: multipath+SMM+strong permissive on thermal", 900.0)
+    # results_dataframes['multipath_smm_permissive'] = df_res
+    # print(f"Scenario 6: multipath+SMM+strong permissive on thermal diagnosis completed")
+    
+    # # Export all results to CSV
+    # print("\nExporting results to CSV...")
+    # dfs_with_scenario = []
+    # for scenario_name, df in results_dataframes.items():
+    #     df_copy = df.copy()
+    #     df_copy.insert(0, 'scenario', scenario_name)
+    #     dfs_with_scenario.append(df_copy)
+    
+    # # Concatenate all DataFrames
+    # combined_df = pd.concat(dfs_with_scenario, ignore_index=True)
+    
+    # # Export to CSV
+    # output_file = 'results/diagnostic_results.csv'
+    # combined_df.to_csv(output_file, index=False)
+    # print(f"All diagnostic results exported to {output_file}")
+    # print(f"Total scenarios: {len(results_dataframes)}")
+    # print(f"Total rows: {len(combined_df)}")
+    # print(f"Columns: {list(combined_df.columns)}")
